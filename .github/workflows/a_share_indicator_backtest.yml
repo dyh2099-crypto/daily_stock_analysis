@@ -1,0 +1,117 @@
+name: A-share technical indicator validity backtest
+
+on:
+  push:
+    branches:
+      - analysis/a-share-indicator-backtest-20260723
+    paths:
+      - "research/a_share_indicator_backtest/**"
+      - ".github/workflows/a_share_indicator_backtest.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "research/a_share_indicator_backtest/**"
+      - ".github/workflows/a_share_indicator_backtest.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    name: Full-market backtest (2021-2025)
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      PYTHONUNBUFFERED: "1"
+      MPLBACKEND: Agg
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            "pandas==2.2.3" "numpy==2.2.6" "scipy==1.15.2" \
+            "statsmodels==0.14.4" "matplotlib==3.10.1" \
+            "pyarrow==19.0.1" "duckdb==1.2.1" "tabulate==0.9.0"
+
+      - name: Download source Parquet shards
+        shell: bash
+        run: |
+          set -euo pipefail
+          DATA_DIR="research/a_share_indicator_backtest/data"
+          mkdir -p "$DATA_DIR"
+          download_one() {
+            i="$1"
+            f=$(printf "%04d" "$i")
+            url="https://huggingface.co/datasets/ellendan/a-share-21/resolve/refs%2Fconvert%2Fparquet/default/train/${f}.parquet?download=true"
+            echo "Downloading ${f}.parquet"
+            curl -L --fail --retry 8 --retry-delay 5 --retry-all-errors \
+              --continue-at - -o "${DATA_DIR}/${f}.parquet" "$url"
+          }
+          export -f download_one
+          export DATA_DIR
+          seq 0 8 | xargs -n1 -P3 bash -c 'download_one "$0"'
+          ls -lh "$DATA_DIR"
+          sha256sum "$DATA_DIR"/*.parquet > /tmp/a_share_source_sha256.txt
+          df -h .
+
+      - name: Run full-market backtest
+        run: |
+          python research/a_share_indicator_backtest/a_share_remote_backtest.py \
+            --input-glob "research/a_share_indicator_backtest/data/*.parquet" \
+            --output "research/a_share_indicator_backtest/results" \
+            --workdir "research/a_share_indicator_backtest/work" \
+            --start "2021-01-01" \
+            --end "2025-02-27" \
+            --delete-input-after-pre
+          cp /tmp/a_share_source_sha256.txt research/a_share_indicator_backtest/results/source_parquet_sha256.txt
+          cp research/a_share_indicator_backtest/a_share_remote_backtest.py research/a_share_indicator_backtest/results/a_share_remote_backtest_launcher.py
+          cp research/a_share_indicator_backtest/a_share_remote_backtest_source.py research/a_share_indicator_backtest/results/a_share_remote_backtest_source.py
+          df -h .
+
+      - name: Validate required outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          R="research/a_share_indicator_backtest/results"
+          test -s "$R/00_run_audit.json"
+          test -s "$R/06_metrics_all_periods.csv"
+          test -s "$R/07_classification_by_horizon.csv"
+          test -s "$R/08_indicator_classification.csv"
+          test -s "$R/A股技术指标失效检验报告.md"
+          test -s "$R/a_share_remote_backtest_source.py"
+          python - <<'PY'
+          import hashlib
+          import json
+          import pandas as pd
+          from pathlib import Path
+          r = Path("research/a_share_indicator_backtest/results")
+          audit = json.loads((r / "00_run_audit.json").read_text(encoding="utf-8"))
+          cls = pd.read_csv(r / "08_indicator_classification.csv")
+          source_hash = hashlib.sha256((r / "a_share_remote_backtest_source.py").read_bytes()).hexdigest()
+          assert source_hash == "b513bb195d69fdbbaa74a38d77e8640a4b931e7f1aa65fded8446c04d078d8b8", source_hash
+          assert int(audit["raw_rows"]) > 8_000_000, audit
+          assert int(audit["eligible_rows"]) > 1_000_000, audit
+          assert cls["indicator"].nunique() == 14, cls
+          assert cls["classification"].notna().all(), cls
+          print(json.dumps(audit, ensure_ascii=False, indent=2, default=str))
+          print(cls.to_string(index=False))
+          PY
+
+      - name: Upload result artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a-share-indicator-backtest-results
+          path: research/a_share_indicator_backtest/results/**
+          if-no-files-found: warn
+          retention-days: 7
