@@ -26,10 +26,30 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install analytical dependencies
+      - name: Cache public market data
+        uses: actions/cache@v4
+        with:
+          path: .cache/a_share21
+          key: a-share21-parquet-v1
+
+      - name: Install analytical dependencies and apply parser-safe aliases
         run: |
           python -m pip install --upgrade pip
           python -m pip install "duckdb>=1.4,<2" "pandas>=2.2,<3" "numpy>=2,<3" "requests>=2.32,<3" "tabulate>=0.9,<1"
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("research/a_share_indicator_backtest_duckdb.py")
+          s = p.read_text(encoding="utf-8")
+          s = s.replace(
+              'CAST(name AS VARCHAR) name, CAST(market AS VARCHAR) market,\n      CAST(exchange AS VARCHAR) exchange, TRY_CAST(list_date AS DATE) list_date',
+              'CAST("name" AS VARCHAR) AS stock_name, CAST("market" AS VARCHAR) AS market_name,\n      CAST("exchange" AS VARCHAR) AS exchange_name, TRY_CAST(list_date AS DATE) AS list_date',
+          )
+          s = s.replace("coalesce(r.name,'')", "coalesce(r.stock_name,'')")
+          s = s.replace("market LIKE '%创业%'", "market_name LIKE '%创业%'")
+          s = s.replace("market LIKE '%科创%'", "market_name LIKE '%科创%'")
+          s = s.replace("exchange LIKE '%BSE%'", "exchange_name LIKE '%BSE%'")
+          p.write_text(s, encoding="utf-8")
+          PY
           python -m py_compile research/a_share_indicator_backtest_duckdb.py
 
       - name: Show runner capacity
