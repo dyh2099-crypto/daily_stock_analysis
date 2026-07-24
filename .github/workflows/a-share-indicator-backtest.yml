@@ -38,11 +38,18 @@ jobs:
           df -h
 
       - name: Run real A-share backtest
+        shell: bash
         run: |
+          mkdir -p artifacts/a_share_backtest
+          set +e
           python research/a_share_indicator_backtest_duckdb.py \
             --output artifacts/a_share_backtest \
             --data-dir .cache/a_share21 \
-            --work-dir .cache/a_share_work
+            --work-dir .cache/a_share_work \
+            2>&1 | tee artifacts/a_share_backtest/run.log
+          status=${PIPESTATUS[0]}
+          echo "$status" > artifacts/a_share_backtest/exit_code.txt
+          exit "$status"
 
       - name: List outputs
         if: always()
