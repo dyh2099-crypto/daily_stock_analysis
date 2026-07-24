@@ -1,0 +1,60 @@
+name: A-share technical indicator backtest
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "research/a_share_indicator_backtest_duckdb.py"
+      - ".github/workflows/a-share-indicator-backtest.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install analytical dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "duckdb>=1.4,<2" "pandas>=2.2,<3" "numpy>=2,<3" "requests>=2.32,<3" "tabulate>=0.9,<1"
+          python -m py_compile research/a_share_indicator_backtest_duckdb.py
+
+      - name: Show runner capacity
+        run: |
+          free -h
+          df -h
+
+      - name: Run real A-share backtest
+        run: |
+          python research/a_share_indicator_backtest_duckdb.py \
+            --output artifacts/a_share_backtest \
+            --data-dir .cache/a_share21 \
+            --work-dir .cache/a_share_work
+
+      - name: List outputs
+        if: always()
+        run: |
+          find artifacts -maxdepth 3 -type f -printf "%p %k KB\n" 2>/dev/null || true
+          df -h
+
+      - name: Upload backtest results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a-share-indicator-backtest-results
+          path: artifacts/a_share_backtest
+          if-no-files-found: warn
+          retention-days: 14
