@@ -50,6 +50,10 @@ jobs:
           s = s.replace("market LIKE '%科创%'", "market_name LIKE '%科创%'")
           s = s.replace("exchange LIKE '%BSE%'", "exchange_name LIKE '%BSE%'")
           s = re.sub(r"\bsession\b", "sess", s)
+          s = s.replace('SELECT count(*) rows,count(DISTINCT code) stocks,min(date) min_date,max(date) max_date,',
+                        'SELECT count(*) AS row_count,count(DISTINCT code) AS stock_count,min(date) AS min_date,max(date) AS max_date,')
+          s = s.replace("stats['rows']", "stats['row_count']")
+          s = s.replace("stats['stocks']", "stats['stock_count']")
           p.write_text(s, encoding="utf-8")
           PY
           python -m py_compile research/a_share_indicator_backtest_duckdb.py
