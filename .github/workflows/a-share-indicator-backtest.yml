@@ -1,0 +1,107 @@
+name: A-share technical indicator backtest
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "research/a_share_indicator_backtest_duckdb.py"
+      - ".github/workflows/a-share-indicator-backtest.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Restore public market data cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/a_share21
+          key: a-share21-parquet-v1
+
+      - name: Install analytical dependencies and apply validated corrections
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "duckdb>=1.4,<2" "pandas>=2.2,<3" "numpy>=2,<3" "requests>=2.32,<3" "tabulate>=0.9,<1"
+          python - <<'PY'
+          import re
+          from pathlib import Path
+          p = Path("research/a_share_indicator_backtest_duckdb.py")
+          s = p.read_text(encoding="utf-8")
+          s = s.replace(
+              'CAST(name AS VARCHAR) name, CAST(market AS VARCHAR) market,\n      CAST(exchange AS VARCHAR) exchange, TRY_CAST(list_date AS DATE) list_date',
+              'CAST("name" AS VARCHAR) AS stock_name, CAST("market" AS VARCHAR) AS market_name,\n      CAST("exchange" AS VARCHAR) AS exchange_name, TRY_CAST(list_date AS DATE) AS list_date',
+          )
+          s = s.replace("coalesce(r.name,'')", "coalesce(r.stock_name,'')")
+          s = s.replace("market LIKE '%创业%'", "market_name LIKE '%创业%'")
+          s = s.replace("market LIKE '%科创%'", "market_name LIKE '%科创%'")
+          s = s.replace("exchange LIKE '%BSE%'", "exchange_name LIKE '%BSE%'")
+          s = re.sub(r"\bsession\b", "sess", s)
+          s = s.replace('SELECT count(*) rows,count(DISTINCT code) stocks,min(date) min_date,max(date) max_date,',
+                        'SELECT count(*) AS row_count,count(DISTINCT code) AS stock_count,min(date) AS min_date,max(date) AS max_date,')
+          s = s.replace("stats['rows']", "stats['row_count']")
+          s = s.replace("stats['stocks']", "stats['stock_count']")
+          s = s.replace('listed_sessions>={cfg.min_list_sessions}', "date_diff('day', list_date, date)>=180")
+          s = s.replace('上市不足120个市场交易日', '上市不足180个自然日（约120个交易日）')
+          s = s.replace('上市不足120日', '上市不足180个自然日（约120个交易日）')
+          s = s.replace(
+              "years=(df.assign(year=pd.to_datetime(df.date).dt.year).groupby(['offs','year']).net.mean()>0).mean()",
+              "ydf=df.assign(year=pd.to_datetime(df.date).dt.year)\n    full=ydf[(ydf.year>ydf.year.min()) & (ydf.year<ydf.year.max())]\n    years=(full.groupby(['offs','year']).net.mean()>0).mean() if not full.empty else math.nan",
+          )
+          p.write_text(s, encoding="utf-8")
+          PY
+          python -m py_compile research/a_share_indicator_backtest_duckdb.py
+
+      - name: Show runner capacity
+        run: |
+          free -h
+          df -h
+
+      - name: Run real A-share backtest
+        shell: bash
+        run: |
+          mkdir -p artifacts/a_share_backtest
+          set +e
+          python research/a_share_indicator_backtest_duckdb.py \
+            --output artifacts/a_share_backtest \
+            --data-dir .cache/a_share21 \
+            --work-dir .cache/a_share_work \
+            2>&1 | tee artifacts/a_share_backtest/run.log
+          status=${PIPESTATUS[0]}
+          echo "$status" > artifacts/a_share_backtest/exit_code.txt
+          exit "$status"
+
+      - name: Save public market data cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/a_share21
+          key: a-share21-parquet-v1
+
+      - name: List outputs
+        if: always()
+        run: |
+          find artifacts -maxdepth 3 -type f -printf "%p %k KB\n" 2>/dev/null || true
+          df -h
+
+      - name: Upload backtest results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a-share-indicator-backtest-results
+          path: artifacts/a_share_backtest
+          if-no-files-found: warn
+          retention-days: 14
