@@ -26,8 +26,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Cache public market data
-        uses: actions/cache@v4
+      - name: Restore public market data cache
+        uses: actions/cache/restore@v4
         with:
           path: .cache/a_share21
           key: a-share21-parquet-v1
@@ -37,6 +37,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "duckdb>=1.4,<2" "pandas>=2.2,<3" "numpy>=2,<3" "requests>=2.32,<3" "tabulate>=0.9,<1"
           python - <<'PY'
+          import re
           from pathlib import Path
           p = Path("research/a_share_indicator_backtest_duckdb.py")
           s = p.read_text(encoding="utf-8")
@@ -48,6 +49,7 @@ jobs:
           s = s.replace("market LIKE '%创业%'", "market_name LIKE '%创业%'")
           s = s.replace("market LIKE '%科创%'", "market_name LIKE '%科创%'")
           s = s.replace("exchange LIKE '%BSE%'", "exchange_name LIKE '%BSE%'")
+          s = re.sub(r"\bsession\b", "sess", s)
           p.write_text(s, encoding="utf-8")
           PY
           python -m py_compile research/a_share_indicator_backtest_duckdb.py
@@ -70,6 +72,13 @@ jobs:
           status=${PIPESTATUS[0]}
           echo "$status" > artifacts/a_share_backtest/exit_code.txt
           exit "$status"
+
+      - name: Save public market data cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/a_share21
+          key: a-share21-parquet-v1
 
       - name: List outputs
         if: always()
