@@ -32,7 +32,7 @@ jobs:
           path: .cache/a_share21
           key: a-share21-parquet-v1
 
-      - name: Install analytical dependencies and apply parser-safe aliases
+      - name: Install analytical dependencies and apply validated corrections
         run: |
           python -m pip install --upgrade pip
           python -m pip install "duckdb>=1.4,<2" "pandas>=2.2,<3" "numpy>=2,<3" "requests>=2.32,<3" "tabulate>=0.9,<1"
@@ -54,6 +54,13 @@ jobs:
                         'SELECT count(*) AS row_count,count(DISTINCT code) AS stock_count,min(date) AS min_date,max(date) AS max_date,')
           s = s.replace("stats['rows']", "stats['row_count']")
           s = s.replace("stats['stocks']", "stats['stock_count']")
+          s = s.replace('listed_sessions>={cfg.min_list_sessions}', "date_diff('day', list_date, date)>=180")
+          s = s.replace('上市不足120个市场交易日', '上市不足180个自然日（约120个交易日）')
+          s = s.replace('上市不足120日', '上市不足180个自然日（约120个交易日）')
+          s = s.replace(
+              "years=(df.assign(year=pd.to_datetime(df.date).dt.year).groupby(['offs','year']).net.mean()>0).mean()",
+              "ydf=df.assign(year=pd.to_datetime(df.date).dt.year)\n    full=ydf[(ydf.year>ydf.year.min()) & (ydf.year<ydf.year.max())]\n    years=(full.groupby(['offs','year']).net.mean()>0).mean() if not full.empty else math.nan",
+          )
           p.write_text(s, encoding="utf-8")
           PY
           python -m py_compile research/a_share_indicator_backtest_duckdb.py
