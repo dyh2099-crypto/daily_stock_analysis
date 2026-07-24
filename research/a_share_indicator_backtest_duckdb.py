@@ -101,8 +101,8 @@ def build_features(con, glob: str, cfg: Cfg) -> dict:
     con.execute(f"""
     CREATE OR REPLACE TABLE raw AS
     SELECT CAST(code AS VARCHAR) code, CAST(date AS DATE) date,
-      TRY_CAST(open AS DOUBLE) open, TRY_CAST(high AS DOUBLE) high,
-      TRY_CAST(low AS DOUBLE) low, TRY_CAST(close AS DOUBLE) close,
+      TRY_CAST("open" AS DOUBLE) open_px, TRY_CAST("high" AS DOUBLE) high_px,
+      TRY_CAST("low" AS DOUBLE) low_px, TRY_CAST("close" AS DOUBLE) close_px,
       TRY_CAST(turnover AS DOUBLE) amount, TRY_CAST(volume AS DOUBLE) volume,
       COALESCE(TRY_CAST(is_paused AS DOUBLE),0) is_paused,
       COALESCE(TRY_CAST(is_st AS DOUBLE),0) is_st,
@@ -110,7 +110,7 @@ def build_features(con, glob: str, cfg: Cfg) -> dict:
       CAST(exchange AS VARCHAR) exchange, TRY_CAST(list_date AS DATE) list_date
     FROM src
     WHERE TRY_CAST(date AS DATE) BETWEEN DATE {q(cfg.start)} AND DATE {q(cfg.end)}
-      AND TRY_CAST(close AS DOUBLE)>0
+      AND TRY_CAST("close" AS DOUBLE)>0
     QUALIFY row_number() OVER(PARTITION BY CAST(code AS VARCHAR),CAST(date AS DATE))=1
     """)
     con.execute("""
@@ -131,42 +131,42 @@ def build_features(con, glob: str, cfg: Cfg) -> dict:
         (c.session-m.list_session+1) listed_sessions,
         (r.is_paused=0 AND r.volume>0 AND r.amount>0) trade_ok,
         (r.is_st<>0 OR regexp_matches(upper(coalesce(r.name,'')),'(^|\\*)ST|退')) st_flag,
-        lag(r.close) OVER w pclose,
-        lag(r.close,5) OVER w c5, lag(r.close,20) OVER w c20, lag(r.close,60) OVER w c60,
-        avg(r.close) OVER (PARTITION BY r.code ORDER BY c.session ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) ma20,
-        avg(r.close) OVER (PARTITION BY r.code ORDER BY c.session ROWS BETWEEN 59 PRECEDING AND CURRENT ROW) ma60,
-        max(r.high) OVER (PARTITION BY r.code ORDER BY c.session ROWS BETWEEN 20 PRECEDING AND 1 PRECEDING) prev_high20,
-        avg(r.close) OVER (PARTITION BY r.code ORDER BY c.session ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) bma20,
-        stddev_samp(r.close) OVER (PARTITION BY r.code ORDER BY c.session ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) bsd20,
+        lag(r.close_px) OVER w pclose,
+        lag(r.close_px,5) OVER w c5, lag(r.close_px,20) OVER w c20, lag(r.close_px,60) OVER w c60,
+        avg(r.close_px) OVER (PARTITION BY r.code ORDER BY c.session ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) ma20,
+        avg(r.close_px) OVER (PARTITION BY r.code ORDER BY c.session ROWS BETWEEN 59 PRECEDING AND CURRENT ROW) ma60,
+        max(r.high_px) OVER (PARTITION BY r.code ORDER BY c.session ROWS BETWEEN 20 PRECEDING AND 1 PRECEDING) prev_high20,
+        avg(r.close_px) OVER (PARTITION BY r.code ORDER BY c.session ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) bma20,
+        stddev_samp(r.close_px) OVER (PARTITION BY r.code ORDER BY c.session ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) bsd20,
         median(CASE WHEN r.is_paused=0 AND r.volume>0 AND r.amount>0 THEN r.amount END)
           OVER (PARTITION BY r.code ORDER BY c.session ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) med_amt20,
         count(CASE WHEN r.is_paused=0 AND r.volume>0 AND r.amount>0 THEN 1 END)
           OVER (PARTITION BY r.code ORDER BY c.session ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) amt_n20,
         sum(CASE WHEN r.is_paused=0 AND r.volume>0 AND r.amount>0 THEN 1 ELSE 0 END)
           OVER (PARTITION BY r.code ORDER BY c.session ROWS BETWEEN {cfg.suspension_window-1} PRECEDING AND CURRENT ROW) trade_n60,
-        lead(r.close,1) OVER w e1, lead(c.session,1) OVER w es1,
+        lead(r.close_px,1) OVER w e1, lead(c.session,1) OVER w es1,
         lead((r.is_paused=0 AND r.volume>0 AND r.amount>0),1) OVER w et1,
-        lead(r.close,2) OVER w exit1, lead(c.session,2) OVER w xs1,
+        lead(r.close_px,2) OVER w exit1, lead(c.session,2) OVER w xs1,
         lead((r.is_paused=0 AND r.volume>0 AND r.amount>0),2) OVER w xt1,
-        lead(r.close,6) OVER w exit5, lead(c.session,6) OVER w xs5,
+        lead(r.close_px,6) OVER w exit5, lead(c.session,6) OVER w xs5,
         lead((r.is_paused=0 AND r.volume>0 AND r.amount>0),6) OVER w xt5,
-        lead(r.close,21) OVER w exit20, lead(c.session,21) OVER w xs20,
+        lead(r.close_px,21) OVER w exit20, lead(c.session,21) OVER w xs20,
         lead((r.is_paused=0 AND r.volume>0 AND r.amount>0),21) OVER w xt20
       FROM raw r JOIN cal c USING(date) LEFT JOIN meta m USING(code)
       WINDOW w AS (PARTITION BY r.code ORDER BY c.session)
     ), x0 AS (
-      SELECT *, ln(close/nullif(pclose,0)) lr,
-        stddev_samp(ln(close/nullif(pclose,0))) OVER
+      SELECT *, ln(close_px/nullif(pclose,0)) lr,
+        stddev_samp(ln(close_px/nullif(pclose,0))) OVER
           (PARTITION BY code ORDER BY session ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) vol20,
-        avg(greatest(close-pclose,0)) OVER
+        avg(greatest(close_px-pclose,0)) OVER
           (PARTITION BY code ORDER BY session ROWS BETWEEN 13 PRECEDING AND CURRENT ROW) gain14,
-        avg(greatest(pclose-close,0)) OVER
+        avg(greatest(pclose-close_px,0)) OVER
           (PARTITION BY code ORDER BY session ROWS BETWEEN 13 PRECEDING AND CURRENT ROW) loss14
       FROM x00
     ), x1 AS (
-      SELECT *, close/c5-1 mom5, close/c20-1 mom20, close/c60-1 mom60,
-        ma20/ma60-1 ma2060, close/prev_high20-1 break20,
-        (close-bma20)/nullif(bsd20,0) boll,
+      SELECT *, close_px/c5-1 mom5, close_px/c20-1 mom20, close_px/c60-1 mom60,
+        ma20/ma60-1 ma2060, close_px/prev_high20-1 break20,
+        (close_px-bma20)/nullif(bsd20,0) boll,
         amount/nullif(med_amt20,0) rel_amt,
         CASE WHEN loss14=0 THEN 100 ELSE 100-100/(1+gain14/nullif(loss14,0)) END rsi14,
         quantile_cont(med_amt20,{cfg.amount_pct}) OVER(PARTITION BY date) amt_cut
