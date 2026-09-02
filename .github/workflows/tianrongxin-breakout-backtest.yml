@@ -35,19 +35,27 @@ jobs:
           wc -l /tmp/tdx_tianrongxin_breakout_backtest.py
 
       - name: Download official TongdaXin complete daily package
+        shell: bash
         run: |
           mkdir -p /tmp/tdx
-          set -o pipefail
           curl -fL --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 3600 \
             -A "Mozilla/5.0" \
             https://data.tdx.com.cn/vipdoc/hsjday.zip \
             -o /tmp/hsjday.zip
           ls -lh /tmp/hsjday.zip
           unzip -tq /tmp/hsjday.zip
+          set +e
           unzip -q /tmp/hsjday.zip -d /tmp/tdx
+          unzip_status=$?
+          set -e
+          if [ "$unzip_status" -gt 1 ]; then
+            echo "unzip failed with status $unzip_status"
+            exit "$unzip_status"
+          fi
+          echo "unzip completed with nonfatal status $unzip_status"
           echo "day_files=$(find /tmp/tdx -type f -name '*.day' | wc -l)"
           du -sh /tmp/tdx
-          find /tmp/tdx -type f -name '*.day' | head -20
+          find /tmp/tdx -type f -name '*.day' | head -20 || true
 
       - name: Run three-year all-A backtest
         id: run_backtest
