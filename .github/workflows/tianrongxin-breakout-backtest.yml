@@ -1,0 +1,70 @@
+name: Tianrongxin-style A-share breakout backtest
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "research/tianrongxin_breakout_backtest.py"
+      - ".github/workflows/tianrongxin-breakout-backtest.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore BaoStock cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/baostock_mainboard_20260901
+          key: baostock-mainboard-v1-${{ github.run_id }}
+          restore-keys: |
+            baostock-mainboard-v1-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "baostock==0.9.3" "pandas>=2.2,<3" "numpy>=2,<3" "tabulate>=0.9,<1"
+          python -m py_compile research/tianrongxin_breakout_backtest.py
+
+      - name: Run diagnostic sample
+        shell: bash
+        run: |
+          mkdir -p artifacts/tianrongxin_breakout_backtest
+          set +e
+          python research/tianrongxin_breakout_backtest.py \
+            --max-codes 20 \
+            --output-dir artifacts/tianrongxin_breakout_backtest \
+            2>&1 | tee artifacts/tianrongxin_breakout_backtest/run.log
+          status=${PIPESTATUS[0]}
+          echo "$status" > artifacts/tianrongxin_breakout_backtest/exit_code.txt
+          exit "$status"
+
+      - name: Save BaoStock cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/baostock_mainboard_20260901
+          key: baostock-mainboard-v1-${{ github.run_id }}
+
+      - name: Upload diagnostic results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tianrongxin-breakout-diagnostic
+          path: artifacts/tianrongxin_breakout_backtest
+          if-no-files-found: warn
+          retention-days: 14
