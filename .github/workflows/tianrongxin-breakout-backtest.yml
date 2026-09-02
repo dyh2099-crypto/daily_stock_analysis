@@ -1,10 +1,10 @@
-name: Tianrongxin-style A-share breakout backtest
+name: Tianrongxin-style all-A breakout backtest
 
 on:
   pull_request:
     branches: [main]
     paths:
-      - "research/tianrongxin_breakout_backtest.py"
+      - "research/tdx_tianrongxin_breakout_backtest.py.gz.b64"
       - ".github/workflows/tianrongxin-breakout-backtest.yml"
   workflow_dispatch:
 
@@ -26,45 +26,77 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Restore BaoStock cache
-        uses: actions/cache/restore@v4
-        with:
-          path: .cache/baostock_mainboard_20260901
-          key: baostock-mainboard-v1-${{ github.run_id }}
-          restore-keys: |
-            baostock-mainboard-v1-
-
-      - name: Install dependencies
+      - name: Install dependencies and decode strategy
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "baostock==0.9.3" "pandas>=2.2,<3" "numpy>=2,<3" "tabulate>=0.9,<1"
-          python -m py_compile research/tianrongxin_breakout_backtest.py
+          python -m pip install "pandas>=2.2,<3" "numpy>=2,<3"
+          base64 -d research/tdx_tianrongxin_breakout_backtest.py.gz.b64 | gzip -dc > /tmp/tdx_tianrongxin_breakout_backtest.py
+          python -m py_compile /tmp/tdx_tianrongxin_breakout_backtest.py
+          wc -l /tmp/tdx_tianrongxin_breakout_backtest.py
 
-      - name: Run diagnostic sample
+      - name: Download official TongdaXin complete daily package
+        run: |
+          mkdir -p /tmp/tdx
+          set -o pipefail
+          curl -fL --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 3600 \
+            -A "Mozilla/5.0" \
+            https://data.tdx.com.cn/vipdoc/hsjday.zip \
+            -o /tmp/hsjday.zip
+          ls -lh /tmp/hsjday.zip
+          unzip -tq /tmp/hsjday.zip
+          unzip -q /tmp/hsjday.zip -d /tmp/tdx
+          echo "day_files=$(find /tmp/tdx -type f -name '*.day' | wc -l)"
+          du -sh /tmp/tdx
+          find /tmp/tdx -type f -name '*.day' | head -20
+
+      - name: Run three-year all-A backtest
+        id: run_backtest
+        continue-on-error: true
         shell: bash
         run: |
-          mkdir -p artifacts/tianrongxin_breakout_backtest
+          mkdir -p artifacts/tdx_tianrongxin_breakout
           set +e
-          python research/tianrongxin_breakout_backtest.py \
-            --max-codes 20 \
-            --output-dir artifacts/tianrongxin_breakout_backtest \
-            2>&1 | tee artifacts/tianrongxin_breakout_backtest/run.log
+          /usr/bin/time -v python /tmp/tdx_tianrongxin_breakout_backtest.py \
+            --tdx-root /tmp/tdx \
+            --output-dir artifacts/tdx_tianrongxin_breakout \
+            --signal-start 20230901 \
+            --signal-end 20260831 \
+            --read-start 20230101 \
+            --read-end 20260902 \
+            --min-median-amount 50000000 \
+            --progress-every 250 \
+            --report-min-trades 30 \
+            2>&1 | tee artifacts/tdx_tianrongxin_breakout/run.log
           status=${PIPESTATUS[0]}
-          echo "$status" > artifacts/tianrongxin_breakout_backtest/exit_code.txt
+          echo "$status" > artifacts/tdx_tianrongxin_breakout/exit_code.txt
           exit "$status"
 
-      - name: Save BaoStock cache
+      - name: Print machine-readable results
         if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: .cache/baostock_mainboard_20260901
-          key: baostock-mainboard-v1-${{ github.run_id }}
+        run: |
+          echo "BACKTEST_EXIT_CODE=$(cat artifacts/tdx_tianrongxin_breakout/exit_code.txt 2>/dev/null || echo missing)"
+          for file in headline.json summary.csv daily_basket_summary.csv annual_summary.csv regime_summary.csv skip_reasons.json data_issues.csv; do
+            echo "===== $file BEGIN ====="
+            if [ -f "artifacts/tdx_tianrongxin_breakout/$file" ]; then
+              cat "artifacts/tdx_tianrongxin_breakout/$file"
+            else
+              echo "MISSING"
+            fi
+            echo "===== $file END ====="
+          done
+          echo "===== run.log tail BEGIN ====="
+          tail -200 artifacts/tdx_tianrongxin_breakout/run.log 2>/dev/null || true
+          echo "===== run.log tail END ====="
 
-      - name: Upload diagnostic results
+      - name: Upload complete backtest outputs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tianrongxin-breakout-diagnostic
-          path: artifacts/tianrongxin_breakout_backtest
+          name: tdx-tianrongxin-all-a-backtest-${{ github.run_id }}
+          path: artifacts/tdx_tianrongxin_breakout
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Enforce successful backtest
+        if: always()
+        run: test "$(cat artifacts/tdx_tianrongxin_breakout/exit_code.txt 2>/dev/null || echo 99)" = "0"
