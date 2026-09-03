@@ -1,0 +1,134 @@
+name: Youzi non-ST parallel three-year backtest
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "research/youzi_nonst_daily_backtest.part00.py"
+      - "research/youzi_nonst_daily_backtest.part01.py"
+      - "research/youzi_nonst_daily_backtest.part02.py"
+      - "research/youzi_download_shard.py"
+      - "research/youzi_analyze_shards.py"
+      - "research/youzi_analyze_shards_safe.py"
+      - ".github/workflows/youzi-parallel-backtest.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  download:
+    name: download-shard-${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "pandas>=2.2,<3" "numpy>=2,<3" "baostock==0.9.3"
+          python -m py_compile research/youzi_download_shard.py
+      - name: Download point-in-time shard
+        shell: bash
+        run: |
+          mkdir -p artifacts/shard-${{ matrix.shard }}
+          /usr/bin/time -v python research/youzi_download_shard.py \
+            --output-dir artifacts/shard-${{ matrix.shard }} \
+            --shard-index ${{ matrix.shard }} \
+            --shard-count 12 \
+            2>&1 | tee artifacts/shard-${{ matrix.shard }}/run_shard_${{ matrix.shard }}.log
+      - name: Upload shard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: youzi-shard-${{ matrix.shard }}-${{ github.run_id }}
+          path: artifacts/shard-${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 7
+
+  analyze:
+    name: combine-and-analyze
+    needs: download
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies and assemble core
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "pandas>=2.2,<3" "numpy>=2,<3" "baostock==0.9.3" "tabulate>=0.9,<1"
+          cat research/youzi_nonst_daily_backtest.part00.py \
+              research/youzi_nonst_daily_backtest.part01.py \
+              research/youzi_nonst_daily_backtest.part02.py \
+              > /tmp/youzi_core.py
+          python -m py_compile /tmp/youzi_core.py research/youzi_analyze_shards.py research/youzi_analyze_shards_safe.py
+          test "$(wc -l < /tmp/youzi_core.py)" -ge 880
+          sha256sum /tmp/youzi_core.py research/youzi_download_shard.py research/youzi_analyze_shards.py research/youzi_analyze_shards_safe.py
+      - name: Download all shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: youzi-shard-*-${{ github.run_id }}
+          path: artifacts/shards
+          merge-multiple: true
+      - name: Verify shard completeness
+        run: |
+          find artifacts/shards -maxdepth 2 -type f -printf '%f %s bytes\n' | sort
+          test "$(find artifacts/shards -name 'manifest_shard_*.json' | wc -l)" -eq 12
+          test "$(find artifacts/shards -name 'daily_shard_*.csv.gz' | wc -l)" -eq 12
+      - name: Run combined backtest
+        id: run_analysis
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p artifacts/final
+          set +e
+          /usr/bin/time -v python research/youzi_analyze_shards_safe.py \
+            --input-root artifacts/shards \
+            --output-dir artifacts/final \
+            --core-script /tmp/youzi_core.py \
+            --industry-snapshot monthly \
+            2>&1 | tee artifacts/final/run.log
+          status=${PIPESTATUS[0]}
+          echo "$status" > artifacts/final/exit_code.txt
+          exit "$status"
+      - name: Print machine-readable results
+        if: always()
+        run: |
+          echo "BACKTEST_EXIT_CODE=$(cat artifacts/final/exit_code.txt 2>/dev/null || echo missing)"
+          for file in headline.json data_audit.json candidate_counts.csv summary.csv annual_summary.csv sentiment_regime_summary.csv; do
+            echo "===== $file BEGIN ====="
+            if [ -f "artifacts/final/$file" ]; then
+              cat "artifacts/final/$file"
+            else
+              echo "MISSING"
+            fi
+            echo "===== $file END ====="
+          done
+          echo "===== run.log tail BEGIN ====="
+          tail -400 artifacts/final/run.log 2>/dev/null || true
+          echo "===== run.log tail END ====="
+      - name: Upload final result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: youzi-nonst-parallel-result-${{ github.run_id }}
+          path: artifacts/final
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Enforce successful analysis
+        if: always()
+        run: test "$(cat artifacts/final/exit_code.txt 2>/dev/null || echo 99)" = "0"
