@@ -42,7 +42,11 @@ jobs:
             "https://data.tdx.com.cn/vipdoc/hsjday.zip" -o hsjday.zip
           test -s hsjday.zip
           sha256sum hsjday.zip | tee source_archive_sha256.txt
+          set +e
           unzip -q hsjday.zip -d tdx_data
+          unzip_status=$?
+          set -e
+          test "$unzip_status" -le 1
           find tdx_data -type f -iname '*.day' | wc -l | tee extracted_day_file_count.txt
           test "$(cat extracted_day_file_count.txt)" -gt 1000
 
