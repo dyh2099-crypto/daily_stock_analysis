@@ -1,0 +1,81 @@
+name: A-share limit-up quotes daily backtest
+
+on:
+  push:
+    branches:
+      - analysis/limitup-50-quotes-backtest-20260903
+    paths:
+      - "research/limitup_quotes_daily_backtest.py"
+      - "research/limitup_backtest_payload/**"
+      - ".github/workflows/limitup-quotes-daily-backtest.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout fixed branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install pinned runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy==2.2.6" "pandas==2.2.3"
+          python --version
+          python -m pip freeze | tee environment.txt
+
+      - name: Download official TongDaXin daily package
+        run: |
+          set -euxo pipefail
+          curl -L --fail --retry 5 --retry-all-errors --connect-timeout 30 --max-time 2400 \
+            -A "Mozilla/5.0" -e "https://www.tdx.com.cn/" \
+            "https://data.tdx.com.cn/vipdoc/hsjday.zip" -o hsjday.zip
+          test -s hsjday.zip
+          sha256sum hsjday.zip | tee source_archive_sha256.txt
+          unzip -q hsjday.zip -d tdx_data
+          find tdx_data -type f -iname '*.day' | wc -l | tee extracted_day_file_count.txt
+          test "$(cat extracted_day_file_count.txt)" -gt 1000
+
+      - name: Run full-market backtest
+        run: |
+          set -euxo pipefail
+          mkdir -p artifacts
+          python research/limitup_quotes_daily_backtest.py \
+            --tdx-root tdx_data \
+            --output-dir artifacts \
+            --signal-end 20260902 \
+            --primary-end 20260630 \
+            --progress-every 250 | tee artifacts/run.log
+          cp source_archive_sha256.txt extracted_day_file_count.txt environment.txt artifacts/
+          cp research/_decoded_limitup_quotes_daily_backtest.py artifacts/limitup_quotes_daily_backtest_full_source.py
+          sha256sum artifacts/limitup_quotes_daily_backtest_full_source.py | tee artifacts/source_code_sha256.txt
+          test -s artifacts/headline.json
+          test -s artifacts/event_summary.csv
+          test -s artifacts/trades.csv.gz
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          h = json.loads(Path('artifacts/headline.json').read_text(encoding='utf-8'))
+          assert h['status'] == 'COMPLETED_DAILY_PROXY', h
+          assert h['data_counts']['symbols_usable'] > 1000, h['data_counts']
+          print(json.dumps(h['data_counts'], ensure_ascii=False, indent=2))
+          PY
+
+      - name: Upload complete evidence package
+        uses: actions/upload-artifact@v4
+        with:
+          name: limitup-quotes-daily-backtest-20260903
+          path: artifacts/
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 14
