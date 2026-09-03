@@ -9,6 +9,7 @@ on:
       - "research/youzi_nonst_daily_backtest.part02.py"
       - "research/youzi_download_shard.py"
       - "research/youzi_analyze_shards.py"
+      - "research/youzi_analyze_shards_safe.py"
       - ".github/workflows/youzi-parallel-backtest.yml"
   workflow_dispatch:
 
@@ -74,9 +75,9 @@ jobs:
               research/youzi_nonst_daily_backtest.part01.py \
               research/youzi_nonst_daily_backtest.part02.py \
               > /tmp/youzi_core.py
-          python -m py_compile /tmp/youzi_core.py research/youzi_analyze_shards.py
+          python -m py_compile /tmp/youzi_core.py research/youzi_analyze_shards.py research/youzi_analyze_shards_safe.py
           test "$(wc -l < /tmp/youzi_core.py)" -ge 880
-          sha256sum /tmp/youzi_core.py research/youzi_download_shard.py research/youzi_analyze_shards.py
+          sha256sum /tmp/youzi_core.py research/youzi_download_shard.py research/youzi_analyze_shards.py research/youzi_analyze_shards_safe.py
       - name: Download all shards
         uses: actions/download-artifact@v4
         with:
@@ -95,7 +96,7 @@ jobs:
         run: |
           mkdir -p artifacts/final
           set +e
-          /usr/bin/time -v python research/youzi_analyze_shards.py \
+          /usr/bin/time -v python research/youzi_analyze_shards_safe.py \
             --input-root artifacts/shards \
             --output-dir artifacts/final \
             --core-script /tmp/youzi_core.py \
