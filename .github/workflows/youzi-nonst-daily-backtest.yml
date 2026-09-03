@@ -1,0 +1,109 @@
+name: Youzi non-ST all-A daily backtest
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "research/youzi_nonst_daily_backtest.py"
+      - ".github/workflows/youzi-nonst-daily-backtest.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "pandas>=2.2,<3" "numpy>=2,<3" "baostock==0.8.9" "tabulate>=0.9"
+          python -m py_compile research/youzi_nonst_daily_backtest.py
+
+      - name: Build resilient BaoStock runner
+        run: |
+          cp research/youzi_nonst_daily_backtest.py /tmp/youzi_nonst_daily_backtest.py
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('/tmp/youzi_nonst_daily_backtest.py')
+          s = p.read_text(encoding='utf-8')
+          old = '''    login = bs.login()\n    if str(getattr(login, "error_code", "-1")) != "0":\n        raise RuntimeError(f"baostock login failed: {getattr(login, 'error_msg', '')}")\n'''
+          new = '''    login = None\n    for login_attempt in range(1, 13):\n        try:\n            login = bs.login()\n            code = str(getattr(login, "error_code", "-1"))\n            msg = str(getattr(login, "error_msg", ""))\n        except Exception as exc:\n            code, msg = "exception", repr(exc)\n        if code == "0":\n            print(f"BaoStock login succeeded on attempt {login_attempt}", flush=True)\n            break\n        print(f"BaoStock login attempt {login_attempt}/12 failed: {code} {msg}", flush=True)\n        try:\n            bs.logout()\n        except Exception:\n            pass\n        time.sleep(min(60, 5 * login_attempt))\n    if login is None or str(getattr(login, "error_code", "-1")) != "0":\n        raise RuntimeError(f"baostock login failed after retries: {getattr(login, 'error_msg', '')}")\n'''
+          if old not in s:
+              raise SystemExit('expected login block not found')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
+          python -m py_compile /tmp/youzi_nonst_daily_backtest.py
+
+      - name: Run three-year non-ST backtest with whole-run retries
+        id: run_backtest
+        continue-on-error: true
+        shell: bash
+        run: |
+          rm -rf artifacts/youzi_nonst_daily
+          mkdir -p artifacts/youzi_nonst_daily
+          final_status=99
+          for attempt in 1 2 3; do
+            echo "===== WHOLE RUN ATTEMPT ${attempt}/3 =====" | tee -a artifacts/youzi_nonst_daily/retry_summary.log
+            set +e
+            /usr/bin/time -v python /tmp/youzi_nonst_daily_backtest.py \
+              --output-dir artifacts/youzi_nonst_daily \
+              --progress-every 200 \
+              2>&1 | tee artifacts/youzi_nonst_daily/run_attempt_${attempt}.log
+            status=${PIPESTATUS[0]}
+            set -e
+            echo "attempt=${attempt} exit=${status}" | tee -a artifacts/youzi_nonst_daily/retry_summary.log
+            final_status=$status
+            if [ "$status" = "0" ]; then
+              cp artifacts/youzi_nonst_daily/run_attempt_${attempt}.log artifacts/youzi_nonst_daily/run.log
+              break
+            fi
+            sleep $((attempt * 45))
+          done
+          if [ ! -f artifacts/youzi_nonst_daily/run.log ]; then
+            cp artifacts/youzi_nonst_daily/run_attempt_3.log artifacts/youzi_nonst_daily/run.log 2>/dev/null || true
+          fi
+          echo "$final_status" > artifacts/youzi_nonst_daily/exit_code.txt
+          exit "$final_status"
+
+      - name: Print key outputs
+        if: always()
+        run: |
+          echo "BACKTEST_EXIT_CODE=$(cat artifacts/youzi_nonst_daily/exit_code.txt 2>/dev/null || echo missing)"
+          for file in data_audit.json candidate_counts.csv summary.csv portfolio_slots.csv annual_summary.csv sentiment_regime_summary.csv skip_reasons.json retry_summary.log; do
+            echo "===== $file BEGIN ====="
+            if [ -f "artifacts/youzi_nonst_daily/$file" ]; then
+              cat "artifacts/youzi_nonst_daily/$file"
+            else
+              echo "MISSING"
+            fi
+            echo "===== $file END ====="
+          done
+          echo "===== run.log tail BEGIN ====="
+          tail -300 artifacts/youzi_nonst_daily/run.log 2>/dev/null || true
+          echo "===== run.log tail END ====="
+
+      - name: Upload outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: youzi-nonst-all-a-${{ github.run_id }}
+          path: artifacts/youzi_nonst_daily
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce success
+        if: always()
+        run: test "$(cat artifacts/youzi_nonst_daily/exit_code.txt 2>/dev/null || echo 99)" = "0"
